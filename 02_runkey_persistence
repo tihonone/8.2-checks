@@ -1,0 +1,202 @@
+# Explorer MyComputer BackupPath modification — interactive reversible registry test
+# Administrator privileges are required.
+# Backs up the existing registry key, temporarily sets a benign default value,
+# validates the change, and optionally restores the exact original state.
+#
+# Type YES when prompted to restore.
+# Any other response retains the modified test configuration and backup file.
+
+$ErrorActionPreference = 'Stop'
+
+$RegistryKey  = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\BackupPath'
+$RegistryPath = 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\MyComputer\BackupPath'
+$PayloadPath  = "$env:WINDIR\System32\notepad.exe"
+$BackupFile   = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath 'EDR_BackupPath_OriginalValue.reg'
+$RegExe       = Join-Path -Path $env:WINDIR -ChildPath 'System32\reg.exe'
+
+$KeyExisted = $false
+$DefaultValueExisted = $false
+$OriginalDefaultValue = $null
+$ChangeApplied = $false
+$RestoreCompleted = $false
+
+function Test-IsAdministrator {
+    $CurrentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $CurrentPrincipal = New-Object Security.Principal.WindowsPrincipal($CurrentIdentity)
+
+    return $CurrentPrincipal.IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator
+    )
+}
+
+function Confirm-Restoration {
+    Write-Host ''
+    Write-Host '================================================================' -ForegroundColor Yellow
+    Write-Host 'Restoration confirmation' -ForegroundColor Yellow
+    Write-Host "Target registry key: $RegistryPath" -ForegroundColor Yellow
+    Write-Host "Temporary default value: `"$PayloadPath`"" -ForegroundColor Yellow
+    Write-Host 'Enter YES to restore the original state now.' -ForegroundColor Yellow
+    Write-Host 'Any other input will keep the current test configuration.' -ForegroundColor Yellow
+    Write-Host '================================================================' -ForegroundColor Yellow
+
+    $Response = Read-Host -Prompt 'Restore original state'
+    return ($Response -ceq 'YES')
+}
+
+function Test-DefaultRegistryValueExists {
+    # reg.exe query with /ve returns 0 only if the default value exists.
+    & $RegExe query $RegistryPath /ve *> $null
+    return ($LASTEXITCODE -eq 0)
+}
+
+try {
+    if (-not (Test-IsAdministrator)) {
+        throw 'Administrator privileges are required. Start PowerShell with Run as administrator.'
+    }
+
+    if (-not (Test-Path -LiteralPath $RegExe -PathType Leaf)) {
+        throw "reg.exe was not found: $RegExe"
+    }
+
+    if (-not (Test-Path -LiteralPath $PayloadPath -PathType Leaf)) {
+        throw "Required benign executable was not found: $PayloadPath"
+    }
+
+    $KeyExisted = Test-Path -LiteralPath $RegistryKey
+
+    if ($KeyExisted) {
+        # Export the complete original key before changing it.
+        & $RegExe export $RegistryPath $BackupFile /y | Out-Null
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to export the original registry key. Exit code: ${LASTEXITCODE}"
+        }
+
+        if (-not (Test-Path -LiteralPath $BackupFile -PathType Leaf)) {
+            throw "Registry backup was not created: $BackupFile"
+        }
+
+        # Explicitly preserve whether the default value existed before this test.
+        $DefaultValueExisted = Test-DefaultRegistryValueExists
+
+        if ($DefaultValueExisted) {
+            $OriginalDefaultValue = (Get-Item -LiteralPath $RegistryKey).GetValue('')
+            Write-Host "Original default value captured: $OriginalDefaultValue"
+        }
+        else {
+            Write-Host 'The original key exists, but its default value is not set.'
+        }
+
+        Write-Host "Original registry key backup created: $BackupFile"
+    }
+    else {
+        # Create the target key only if it did not exist before the test.
+        New-Item -Path $RegistryKey -Force | Out-Null
+        Write-Host 'The target registry key did not exist and was created for this test.'
+    }
+
+    # Write the temporary benign default value.
+    & $RegExe add $RegistryPath /ve /t REG_SZ /d "`"$PayloadPath`"" /f | Out-Null
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to set the temporary default value. Exit code: ${LASTEXITCODE}"
+    }
+
+    $ChangeApplied = $true
+
+    # Validate the test value through reg.exe.
+    & $RegExe query $RegistryPath /ve
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to query the temporary registry value. Exit code: ${LASTEXITCODE}"
+    }
+
+    Write-Host "Test completed: BackupPath default value was temporarily set to `"$PayloadPath`"."
+}
+catch {
+    Write-Error "Test failed: $($_.Exception.Message)"
+}
+finally {
+    if (-not $ChangeApplied) {
+        Write-Host 'No temporary registry value was applied. No restoration action is required.'
+    }
+    else {
+        $RestoreApproved = Confirm-Restoration
+
+        if ($RestoreApproved) {
+            try {
+                if ($KeyExisted) {
+                    # Restore all values that existed in the original key.
+                    & $RegExe import $BackupFile | Out-Null
+
+                    if ($LASTEXITCODE -ne 0) {
+                        throw "Failed to import the original registry key backup. Exit code: ${LASTEXITCODE}"
+                    }
+
+                    # An import merges data; it does not remove a default value created after export.
+                    if (-not $DefaultValueExisted) {
+                        & $RegExe delete $RegistryPath /ve /f | Out-Null
+
+                        if (($LASTEXITCODE -ne 0) -and ($LASTEXITCODE -ne 1)) {
+                            throw "Failed to remove the temporary default value. Exit code: ${LASTEXITCODE}"
+                        }
+
+                        Write-Host 'Temporary default value was removed because it did not exist before the test.'
+                    }
+                    else {
+                        # Verify that the original default value is present after import.
+                        $RestoredDefaultValue = (Get-Item -LiteralPath $RegistryKey).GetValue('')
+
+                        if ($RestoredDefaultValue -ne $OriginalDefaultValue) {
+                            throw 'The original default value was not restored correctly.'
+                        }
+
+                        Write-Host 'Original default value was restored from the registry backup.'
+                    }
+
+                    Write-Host 'Original BackupPath registry key was restored.' -ForegroundColor Green
+                }
+                else {
+                    # Remove only the key created by this test.
+                    Remove-Item -LiteralPath $RegistryKey -Recurse -Force -ErrorAction Stop
+                    Write-Host 'Temporary BackupPath registry key was removed.' -ForegroundColor Green
+                }
+
+                $RestoreCompleted = $true
+            }
+            catch {
+                Write-Error "Restoration failed: $($_.Exception.Message)"
+            }
+
+            if ($RestoreCompleted -and (Test-Path -LiteralPath $BackupFile -PathType Leaf)) {
+                Remove-Item -LiteralPath $BackupFile -Force -ErrorAction SilentlyContinue
+
+                if (Test-Path -LiteralPath $BackupFile) {
+                    Write-Warning "Restoration completed, but the backup file was not removed: $BackupFile"
+                }
+                else {
+                    Write-Host 'Backup file was removed after successful restoration.' -ForegroundColor Green
+                }
+            }
+        }
+        else {
+            Write-Warning 'Restoration was skipped by the operator.'
+            Write-Warning "The current test value remains: $RegistryPath\(Default) = `"$PayloadPath`""
+
+            if ($KeyExisted) {
+                Write-Warning "Original registry backup retained at: $BackupFile"
+                Write-Warning "Manual rollback command: `"$RegExe`" import `"$BackupFile`""
+
+                if (-not $DefaultValueExisted) {
+                    Write-Warning "Then remove the test default value: `"$RegExe`" delete `"$RegistryPath`" /ve /f"
+                }
+            }
+            else {
+                Write-Warning 'The registry key was created by this test and remains present.'
+                Write-Warning "Manual rollback command: Remove-Item -LiteralPath '$RegistryKey' -Recurse -Force"
+            }
+
+            Write-Warning 'Do not use the BackupPath action until the original state is restored.'
+        }
+    }
+}
