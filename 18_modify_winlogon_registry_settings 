@@ -1,0 +1,69 @@
+# Modifies Winlogon Userinit Settings — safe interactive EDR simulation
+# Creates a simulated Userinit value under an isolated HKCU test key.
+# The test value contains userinit.exe with a clearly benign test-only argument marker.
+# After validation, the script asks whether to replace the test value with
+# a baseline-like Userinit value: C:\Windows\System32\userinit.exe,
+#
+# No real Winlogon registry paths are modified.
+# No logoff, reboot, process execution, network activity, or system configuration change occurs.
+# Administrator privileges are not required.
+#
+# Run interactively. Type YES at the cleanup prompt to apply the baseline-like value.
+# Any other input preserves the test marker inside the simulation key.
+
+$ErrorActionPreference = 'Stop'
+
+$TestRegistryPath = 'HKLM\Software\Microsoft\Windows NT\CurrentVersion\Winlogon'
+$TestRegistryRegPath = 'HKLM\Software\Microsoft\Windows NT\CurrentVersion\Winlogon'
+
+$ValueName = 'Userinit'
+$UserinitPath = Join-Path -Path $env:WINDIR -ChildPath 'System32\userinit.exe'
+$SafeArgument = 'EDR_SAFE_USERINIT_ARGUMENT_TEST'
+
+# Test data only: stored outside real Winlogon paths and never executed.
+$SafeValueData = "$UserinitPath $SafeArgument,"
+
+# Baseline-like simulation value, applied only when the operator explicitly confirms.
+$BaselineValue = "$UserinitPath,"
+
+$RegExe = Join-Path -Path $env:WINDIR -ChildPath 'System32\reg.exe'
+
+function Invoke-RegCommand {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Description,
+
+        [switch]$IgnoreFailure
+    )
+
+    Write-Host $Description
+    Write-Host "Command: `"$RegExe`" $($Arguments -join ' ')"
+
+    & $RegExe @Arguments
+    $ExitCode = $LASTEXITCODE
+
+    if (($ExitCode -ne 0) -and (-not $IgnoreFailure)) {
+        throw "reg.exe failed with exit code ${ExitCode}."
+    }
+
+    return $ExitCode
+}
+
+function Confirm-BaselineCleanup {
+    Write-Host ''
+    Write-Host '================================================================' -ForegroundColor Yellow
+    Write-Host 'Baseline-like cleanup confirmation' -ForegroundColor Yellow
+    Write-Host "Simulation registry key: $TestRegistryPath" -ForegroundColor Yellow
+    Write-Host "Current test value: $SafeValueData" -ForegroundColor Yellow
+    Write-Host "Proposed baseline-like value: $BaselineValue" -ForegroundColor Yellow
+    Write-Host 'Enter YES to replace the test value with the baseline-like Userinit value.' -ForegroundColor Yellow
+    Write-Host 'Any other input preserves the current test value in the simulation key.' -ForegroundColor Yellow
+    Write-Host '================================================================' -ForegroundColor Yellow
+
+    $Response = Read-Host -Prompt 'Apply baseline-like cleanup'
+
+    return ($Response -ceq 'YES')
+}

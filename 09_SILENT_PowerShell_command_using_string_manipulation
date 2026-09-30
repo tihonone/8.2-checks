@@ -1,0 +1,22 @@
+# Safe Base64 preparation for WmiConsumerText detection validation.
+# This script does not create a WMI consumer, event filter, or binding.
+# It does not execute the decoded text.
+
+$SafeCommand = "Write-Output 'EDR safe WmiConsumerText Base64 test'"
+
+$EncodedCommand = [Convert]::ToBase64String(
+    [Text.Encoding]::Unicode.GetBytes($SafeCommand)
+)
+
+$DecodedCommand = [Text.Encoding]::Unicode.GetString(
+    [Convert]::FromBase64String($EncodedCommand)
+)
+
+Write-Host "Base64 text: $EncodedCommand"
+Write-Host "Decoded text: $DecodedCommand"
+
+if ($DecodedCommand -ne $SafeCommand) {
+    throw 'Base64 validation failed.'
+}
+
+Write-Host 'Test completed: a safe Base64 command string was generated and decoded without execution.'

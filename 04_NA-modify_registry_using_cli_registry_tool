@@ -1,0 +1,109 @@
+# Modifies Registry Using Command-Line Registry Tool — safe reversible EDR test
+# Creates, queries, and removes one dedicated test registry value with reg.exe.
+# The test operates only under HKCU and does not modify persistence,
+# security settings, system configuration, or existing registry values.
+# Administrator privileges are not required.
+
+$ErrorActionPreference = 'Stop'
+
+$RegistryPath = 'HKCU\Software\CurrentVersion\Policies\Explorer\Run\EDRTest'
+$ValueName   = 'CommandLineRegistryToolTest'
+$ValueData   = 'SafeTestValue'
+$RegExe      = Join-Path -Path $env:WINDIR -ChildPath 'System32\reg.exe'
+
+function Invoke-RegCommand {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Description,
+
+        [switch]$IgnoreFailure
+    )
+
+    Write-Host $Description
+    Write-Host "Command: `"$RegExe`" $($Arguments -join ' ')"
+
+    & $RegExe @Arguments
+    $ExitCode = $LASTEXITCODE
+
+    if (($ExitCode -ne 0) -and (-not $IgnoreFailure)) {
+        throw "reg.exe failed with exit code ${ExitCode}."
+    }
+
+    return $ExitCode
+}
+
+try {
+    if (-not (Test-Path -LiteralPath $RegExe -PathType Leaf)) {
+        throw "reg.exe was not found at: $RegExe"
+    }
+
+    # Check for a leftover value from a previous incomplete test run.
+    $ExistingValueExitCode = Invoke-RegCommand `
+        -Description 'Checking for an existing test registry value.' `
+        -Arguments @('query', $RegistryPath, '/v', $ValueName) `
+        -IgnoreFailure
+
+    # Remove only the exact value used by this test, if it already exists.
+    if ($ExistingValueExitCode -eq 0) {
+        $RemoveOldValueExitCode = Invoke-RegCommand `
+            -Description 'Removing the previous test registry value.' `
+            -Arguments @('delete', $RegistryPath, '/v', $ValueName, '/f') `
+            -IgnoreFailure
+
+        if ($RemoveOldValueExitCode -ne 0) {
+            throw "Could not remove the previous test value. Exit code: ${RemoveOldValueExitCode}"
+        }
+    }
+
+    # Create the dedicated test value using the Windows command-line registry tool.
+    $CreateValueExitCode = Invoke-RegCommand `
+        -Description 'Creating the test registry value with reg.exe.' `
+        -Arguments @('add', $RegistryPath, '/v', $ValueName, '/t', 'REG_SZ', '/d', $ValueData, '/f') `
+        -IgnoreFailure
+
+    if ($CreateValueExitCode -ne 0) {
+        throw "Could not create the test registry value. Exit code: ${CreateValueExitCode}"
+    }
+
+    # Query the value using reg.exe to generate explicit command-line read telemetry.
+    $QueryValueExitCode = Invoke-RegCommand `
+        -Description 'Querying the test registry value with reg.exe.' `
+        -Arguments @('query', $RegistryPath, '/v', $ValueName) `
+        -IgnoreFailure
+
+    if ($QueryValueExitCode -ne 0) {
+        throw "Could not query the test registry value. Exit code: ${QueryValueExitCode}"
+    }
+
+    Write-Host 'Test completed: reg.exe created and queried the dedicated test registry value.'
+}
+catch {
+    Write-Error "Test failed: $($_.Exception.Message)"
+}
+finally {
+    # Check whether the exact test value exists before attempting cleanup.
+    $CleanupCheckExitCode = Invoke-RegCommand `
+        -Description 'Checking whether the test registry value requires cleanup.' `
+        -Arguments @('query', $RegistryPath, '/v', $ValueName) `
+        -IgnoreFailure
+
+    if ($CleanupCheckExitCode -eq 0) {
+        $CleanupDeleteExitCode = Invoke-RegCommand `
+            -Description 'Removing the test registry value.' `
+            -Arguments @('delete', $RegistryPath, '/v', $ValueName, '/f') `
+            -IgnoreFailure
+
+        if ($CleanupDeleteExitCode -eq 0) {
+            Write-Host 'Cleanup completed: the test registry value was removed.'
+        }
+        else {
+            Write-Warning "Cleanup warning: the test registry value could not be removed. Exit code: ${CleanupDeleteExitCode}"
+        }
+    }
+    else {
+        Write-Host 'Cleanup completed: the test registry value was not present.'
+    }
+}

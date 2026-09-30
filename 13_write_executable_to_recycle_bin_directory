@@ -1,0 +1,133 @@
+# Simulated executable rename and Recycle.Bin write — safe reversible EDR test
+# Copies the Windows PowerShell executable to an isolated Local AppData test directory
+# using an explicit test-only filename, then uses the copied executable to copy a harmless
+# synthetic text file into a simulated Recycle.Bin directory.
+#
+# This script does not write to the real C:\$Recycle.Bin.
+# It does not use the name of a real third-party application.
+# It does not execute commands from untrusted input and removes all artifacts at completion.
+# Administrator privileges are not required.
+
+$ErrorActionPreference = 'Stop'
+
+$AppDataRoot = [Environment]::GetFolderPath('LocalApplicationData')
+$TestRoot = Join-Path -Path $AppDataRoot -ChildPath 'EDR_RecycleBinMasquerade_Test'
+
+$SourceDirectory = Join-Path -Path $TestRoot -ChildPath 'source'
+$RecycleBinSimulation = Join-Path -Path $TestRoot -ChildPath 'Recycle.Bin'
+
+$SystemPowerShell = Join-Path -Path $env:WINDIR -ChildPath 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$RenamedPowerShell = Join-Path -Path $TestRoot -ChildPath '7zip.exe'
+
+$SourceFile = Join-Path -Path $SourceDirectory -ChildPath 'safe_test.txt'
+$DestinationFile = Join-Path -Path $RecycleBinSimulation -ChildPath 'safe_test.txt'
+
+try {
+    # Validate that the source PowerShell executable exists and is correctly signed.
+    if (-not (Test-Path -LiteralPath $SystemPowerShell -PathType Leaf)) {
+        throw "System PowerShell executable was not found: $SystemPowerShell"
+    }
+
+    $PowerShellSignature = Get-AuthenticodeSignature -FilePath $SystemPowerShell
+
+    if ($PowerShellSignature.Status -ne 'Valid') {
+        throw "System PowerShell signature is not valid. Status: $($PowerShellSignature.Status)"
+    }
+
+    # Create isolated test locations.
+    New-Item -ItemType Directory -Path $SourceDirectory -Force | Out-Null
+    New-Item -ItemType Directory -Path $RecycleBinSimulation -Force | Out-Null
+
+    # Copy the signed system PowerShell binary under a clearly test-only name.
+    Copy-Item -LiteralPath $SystemPowerShell -Destination $RenamedPowerShell -Force
+
+    $CopiedSignature = Get-AuthenticodeSignature -FilePath $RenamedPowerShell
+
+    if ($CopiedSignature.Status -ne 'Valid') {
+        throw "Copied PowerShell signature is not valid. Status: $($CopiedSignature.Status)"
+    }
+
+    # Create only synthetic, non-sensitive source content.
+    Set-Content `
+        -LiteralPath $SourceFile `
+        -Value 'EDR safe synthetic file for simulated Recycle.Bin copy testing.' `
+        -Encoding UTF8 `
+        -Force
+
+    # Use the renamed copy to execute a fixed, allowlisted Copy-Item operation.
+    # The source and destination are fixed test paths constructed by this parent script.
+    $ChildScript = @'
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$Source,
+
+    [Parameter(Mandatory = $true)]
+    [string]$Destination
+)
+
+$ErrorActionPreference = 'Stop'
+
+if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
+    throw "Synthetic source file was not found: $Source"
+}
+
+$DestinationDirectory = Split-Path -Path $Destination -Parent
+
+if (-not (Test-Path -LiteralPath $DestinationDirectory -PathType Container)) {
+    throw "Simulated destination directory was not found: $DestinationDirectory"
+}
+
+Copy-Item -LiteralPath $Source -Destination $Destination -Force
+'@
+
+    $ChildScriptPath = Join-Path -Path $TestRoot -ChildPath 'copy_safe_test_file.ps1'
+
+    Set-Content `
+        -LiteralPath $ChildScriptPath `
+        -Value $ChildScript `
+        -Encoding UTF8 `
+        -Force
+
+    # The child uses the renamed copy of PowerShell and performs only a local file copy.
+    & $RenamedPowerShell `
+        -NoProfile `
+        -ExecutionPolicy Bypass `
+        -File $ChildScriptPath `
+        -Source $SourceFile `
+        -Destination $DestinationFile
+
+    $ChildExitCode = $LASTEXITCODE
+
+    if ($ChildExitCode -ne 0) {
+        throw "Renamed test PowerShell process returned exit code ${ChildExitCode}."
+    }
+
+    # Validate that only the expected synthetic file was copied.
+    if (-not (Test-Path -LiteralPath $DestinationFile -PathType Leaf)) {
+        throw "Expected simulated Recycle.Bin destination file was not created: $DestinationFile"
+    }
+
+    $SourceHash = (Get-FileHash -LiteralPath $SourceFile -Algorithm SHA256).Hash
+    $DestinationHash = (Get-FileHash -LiteralPath $DestinationFile -Algorithm SHA256).Hash
+
+    if ($SourceHash -ne $DestinationHash) {
+        throw 'The copied test file hash does not match the source file hash.'
+    }
+
+    Write-Host "Renamed test executable: $RenamedPowerShell"
+    Write-Host "Simulated destination: $DestinationFile"
+    Write-Host 'Test completed: safe renamed-executable and simulated Recycle.Bin copy telemetry was generated.'
+}
+finally {
+    # Delete only the dedicated test directory and its synthetic artifacts.
+    if (Test-Path -LiteralPath $TestRoot) {
+        Remove-Item -LiteralPath $TestRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    if (Test-Path -LiteralPath $TestRoot) {
+        Write-Warning "Cleanup warning: the test directory still exists: $TestRoot"
+    }
+    else {
+        Write-Host 'Cleanup completed: all simulated test artifacts were removed.'
+    }
+}

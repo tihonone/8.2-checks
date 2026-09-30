@@ -1,0 +1,136 @@
+# Registers Time Provider DLL — safe reversible registry-only EDR test
+# Creates a temporary disabled Time Provider registry configuration.
+# References only the built-in W32Time.dll and never enables or loads it.
+# Does not restart W32Time, resynchronize time, or reboot the system.
+# Administrator privileges are required.
+
+$ErrorActionPreference = 'Stop'
+
+$ProviderName = 'EDRSafeTimeProviderTest'
+$TimeProvidersRoot = 'HKLM\SYSTEM\CurrentControlSet\Services\W32Time\TimeProviders'
+$ProviderRegistryPath = "$TimeProvidersRoot\$ProviderName"
+$W32TimeDll = Join-Path -Path $env:WINDIR -ChildPath 'System32\W32Time.dll'
+$RegExe = Join-Path -Path $env:WINDIR -ChildPath 'System32\reg.exe'
+
+function Invoke-RegCommand {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Description,
+
+        [switch]$IgnoreFailure
+    )
+
+    Write-Host $Description
+    Write-Host "Command: `"$RegExe`" $($Arguments -join ' ')"
+
+    & $RegExe @Arguments
+    $ExitCode = $LASTEXITCODE
+
+    if (($ExitCode -ne 0) -and (-not $IgnoreFailure)) {
+        throw "reg.exe failed with exit code ${ExitCode}."
+    }
+
+    return $ExitCode
+}
+
+function Test-IsAdministrator {
+    $CurrentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $CurrentPrincipal = New-Object Security.Principal.WindowsPrincipal($CurrentIdentity)
+
+    return $CurrentPrincipal.IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator
+    )
+}
+
+try {
+    if (-not (Test-IsAdministrator)) {
+        throw 'Administrator privileges are required. Start PowerShell with Run as administrator.'
+    }
+
+    if (-not (Test-Path -LiteralPath $RegExe -PathType Leaf)) {
+        throw "reg.exe was not found at: $RegExe"
+    }
+
+    if (-not (Test-Path -LiteralPath $W32TimeDll -PathType Leaf)) {
+        throw "The built-in W32Time DLL was not found at: $W32TimeDll"
+    }
+
+    # Remove only a possible leftover test key from an interrupted prior run.
+    $ExistingKeyExitCode = Invoke-RegCommand `
+        -Description 'Checking for an existing test Time Provider registry key.' `
+        -Arguments @('query', $ProviderRegistryPath) `
+        -IgnoreFailure
+
+    if ($ExistingKeyExitCode -eq 0) {
+        $RemoveOldKeyExitCode = Invoke-RegCommand `
+            -Description 'Removing the previous test Time Provider registry key.' `
+            -Arguments @('delete', $ProviderRegistryPath, '/f') `
+            -IgnoreFailure
+
+        if ($RemoveOldKeyExitCode -ne 0) {
+            throw "Could not remove the previous test key. Exit code: ${RemoveOldKeyExitCode}"
+        }
+    }
+
+    # Create an isolated Time Provider subkey and point it to the built-in DLL.
+    $CreateDllNameExitCode = Invoke-RegCommand `
+        -Description 'Creating the test Time Provider DllName value with reg.exe.' `
+        -Arguments @('add', $ProviderRegistryPath, '/v', 'DllName', '/t', 'REG_SZ', '/d', $W32TimeDll, '/f') `
+        -IgnoreFailure
+
+    if ($CreateDllNameExitCode -ne 0) {
+        throw "Could not create the DllName value. Exit code: ${CreateDllNameExitCode}"
+    }
+
+    # Keep the test provider explicitly disabled to prevent service loading.
+    $CreateEnabledExitCode = Invoke-RegCommand `
+        -Description 'Creating the test Time Provider Enabled value with value 0.' `
+        -Arguments @('add', $ProviderRegistryPath, '/v', 'Enabled', '/t', 'REG_DWORD', '/d', '0', '/f') `
+        -IgnoreFailure
+
+    if ($CreateEnabledExitCode -ne 0) {
+        throw "Could not create the Enabled value. Exit code: ${CreateEnabledExitCode}"
+    }
+
+    # Query the test key to generate explicit read telemetry and confirm its state.
+    $QueryKeyExitCode = Invoke-RegCommand `
+        -Description 'Querying the disabled test Time Provider registry key.' `
+        -Arguments @('query', $ProviderRegistryPath) `
+        -IgnoreFailure
+
+    if ($QueryKeyExitCode -ne 0) {
+        throw "Could not query the test provider key. Exit code: ${QueryKeyExitCode}"
+    }
+
+    Write-Host 'Test completed: disabled Time Provider registry configuration was created and validated.'
+}
+catch {
+    Write-Error "Test failed: $($_.Exception.Message)"
+}
+finally {
+    # Delete only the test provider key; no existing Microsoft provider keys are modified.
+    $CleanupCheckExitCode = Invoke-RegCommand `
+        -Description 'Checking whether the test Time Provider registry key requires cleanup.' `
+        -Arguments @('query', $ProviderRegistryPath) `
+        -IgnoreFailure
+
+    if ($CleanupCheckExitCode -eq 0) {
+        $CleanupDeleteExitCode = Invoke-RegCommand `
+            -Description 'Removing the test Time Provider registry key.' `
+            -Arguments @('delete', $ProviderRegistryPath, '/f') `
+            -IgnoreFailure
+
+        if ($CleanupDeleteExitCode -eq 0) {
+            Write-Host 'Cleanup completed: the test Time Provider registry key was removed.'
+        }
+        else {
+            Write-Warning "Cleanup warning: the test registry key could not be removed. Exit code: ${CleanupDeleteExitCode}"
+        }
+    }
+    else {
+        Write-Host 'Cleanup completed: the test Time Provider registry key was not present.'
+    }
+}
