@@ -1,2 +1,0 @@
-there is nothing critical in running net use with valid credentials. 
-Probably it is more then enough to use threat hunting and demonstrate how to create custom correlation rules to mark such events as alerts   

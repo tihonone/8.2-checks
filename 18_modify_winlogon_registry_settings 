@@ -1,15 +1,10 @@
-# Modifies Winlogon Userinit Settings — safe interactive EDR simulation
-# Creates a simulated Userinit value under an isolated HKCU test key.
-# The test value contains userinit.exe with a clearly benign test-only argument marker.
-# After validation, the script asks whether to replace the test value with
-# a baseline-like Userinit value: C:\Windows\System32\userinit.exe,
-#
-# No real Winlogon registry paths are modified.
-# No logoff, reboot, process execution, network activity, or system configuration change occurs.
-# Administrator privileges are not required.
-#
-# Run interactively. Type YES at the cleanup prompt to apply the baseline-like value.
-# Any other input preserves the test marker inside the simulation key.
+# Modifies Winlogon Userinit Settings — safe reversible EDR simulation
+# Creates a simulated Userinit value under a HKLM Winlogon\Userinit key.
+# The value contains userinit.exe with a clearly benign test-only argument marker.
+# !!! Real Winlogon registry paths are modified.
+# DO NOT logoff, reboot, process execution, network activity, or system configuration change.
+# Administrator privileges are required.
+# Execute only on testing VM with initial state snapshow available!
 
 $ErrorActionPreference = 'Stop'
 
@@ -22,9 +17,6 @@ $SafeArgument = 'EDR_SAFE_USERINIT_ARGUMENT_TEST'
 
 # Test data only: stored outside real Winlogon paths and never executed.
 $SafeValueData = "$UserinitPath $SafeArgument,"
-
-# Baseline-like simulation value, applied only when the operator explicitly confirms.
-$BaselineValue = "$UserinitPath,"
 
 $RegExe = Join-Path -Path $env:WINDIR -ChildPath 'System32\reg.exe'
 
@@ -52,18 +44,121 @@ function Invoke-RegCommand {
     return $ExitCode
 }
 
-function Confirm-BaselineCleanup {
-    Write-Host ''
-    Write-Host '================================================================' -ForegroundColor Yellow
-    Write-Host 'Baseline-like cleanup confirmation' -ForegroundColor Yellow
-    Write-Host "Simulation registry key: $TestRegistryPath" -ForegroundColor Yellow
-    Write-Host "Current test value: $SafeValueData" -ForegroundColor Yellow
-    Write-Host "Proposed baseline-like value: $BaselineValue" -ForegroundColor Yellow
-    Write-Host 'Enter YES to replace the test value with the baseline-like Userinit value.' -ForegroundColor Yellow
-    Write-Host 'Any other input preserves the current test value in the simulation key.' -ForegroundColor Yellow
-    Write-Host '================================================================' -ForegroundColor Yellow
+try {
+    # Validate required system binaries.
+    if (-not (Test-Path -LiteralPath $RegExe -PathType Leaf)) {
+        throw "reg.exe was not found: $RegExe"
+    }
 
-    $Response = Read-Host -Prompt 'Apply baseline-like cleanup'
+    if (-not (Test-Path -LiteralPath $UserinitPath -PathType Leaf)) {
+        throw "Required system executable was not found: $UserinitPath"
+    }
 
-    return ($Response -ceq 'YES')
+    # Validate the Microsoft signature of userinit.exe.
+    $UserinitSignature = Get-AuthenticodeSignature -FilePath $UserinitPath
+
+    if ($UserinitSignature.Status -ne 'Valid') {
+        throw "userinit.exe signature is not valid. Status: $($UserinitSignature.Status)"
+    }
+
+    # Remove only the dedicated simulation key left by a previous incomplete run.
+    if (Test-Path -LiteralPath $TestRegistryPath) {
+        Remove-Item -LiteralPath $TestRegistryPath -Recurse -Force -ErrorAction Stop
+    }
+
+    # Create an isolated Userinit-like value through reg.exe.
+    Invoke-RegCommand `
+        -Description 'Creating the simulated Winlogon Userinit registry value.' `
+        -Arguments @(
+            'add',
+            $TestRegistryRegPath,
+            '/v',
+            $ValueName,
+            '/t',
+            'REG_SZ',
+            '/d',
+            $SafeValueData,
+            '/f'
+        ) | Out-Null
+
+    # Query the value through reg.exe for command-line telemetry and validation.
+    Invoke-RegCommand `
+        -Description 'Querying the simulated Winlogon Userinit registry value.' `
+        -Arguments @(
+            'query',
+            $TestRegistryRegPath,
+            '/v',
+            $ValueName
+        ) | Out-Null
+
+    # Validate the exact stored test data.
+    $StoredValue = (
+        Get-ItemProperty `
+            -LiteralPath $TestRegistryPath `
+            -Name $ValueName `
+            -ErrorAction Stop
+    ).$ValueName
+
+    if ($StoredValue -ne $SafeValueData) {
+        throw 'Safety validation failed: the simulated Userinit value does not match the expected test data.'
+    }
+
+    Write-Host "Test value created: $ValueName = $SafeValueData"
+    Write-Host 'Test completed: simulated Winlogon Userinit argument modification telemetry was generated.'
+    Write-Host 'No real Winlogon keys were modified and no process was executed.'
+}
+catch {
+    Write-Error "Test failed: $($_.Exception.Message)"
+}
+finally {
+    # Restore only the Userinit VALUE; never delete the Winlogon key.
+    $WinlogonPath = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    $ExpectedTestValue = "$UserinitPath $SafeArgument,"
+    $OriginalValue = 'C:\Windows\System32\userinit.exe,'
+
+    if (-not (Test-Path -LiteralPath $WinlogonPath)) {
+        Write-Error "Winlogon key was not found: $WinlogonPath"
+    }
+    else {
+        try {
+            $CurrentValue = (
+                Get-ItemProperty `
+                    -LiteralPath $WinlogonPath `
+                    -Name Userinit `
+                    -ErrorAction Stop
+            ).Userinit
+
+            if ($CurrentValue -ceq $ExpectedTestValue) {
+                Set-ItemProperty `
+                    -LiteralPath $WinlogonPath `
+                    -Name Userinit `
+                    -Value $OriginalValue `
+                    -ErrorAction Stop
+
+                $VerifiedValue = (
+                    Get-ItemProperty `
+                        -LiteralPath $WinlogonPath `
+                        -Name Userinit `
+                        -ErrorAction Stop
+                ).Userinit
+
+                if ($VerifiedValue -cne $OriginalValue) {
+                    throw "Restoration could not be verified. Current value: $VerifiedValue"
+                }
+
+                Write-Host "Userinit restored and verified: $VerifiedValue"
+            }
+            elseif ($CurrentValue -ceq $OriginalValue) {
+                Write-Host "Userinit already matches the confirmed original value: $CurrentValue"
+            }
+            else {
+                Write-Warning 'Userinit was not changed: its current value differs from both the test value and the confirmed original value.'
+                Write-Warning "Current value: $CurrentValue"
+                Write-Warning 'Review the original backup or approved system baseline before changing it.'
+            }
+        }
+        catch {
+            Write-Error "Userinit restoration or verification failed: $($_.Exception.Message)"
+        }
+    }
 }

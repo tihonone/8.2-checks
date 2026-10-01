@@ -1,0 +1,186 @@
+#requires -Version 5.1
+#requires -RunAsAdministrator
+<#
+Scenario 4: modify_registry_using_cli_registry_tool.
+LAB VM ONLY. Adds one unique REG_SZ value in the actual NetSh key
+using reg.exe, pointing to a zero-byte .dll file. Never launches netsh.
+Removes the value in finally; deletes the file only after rollback.
+Run elevated in 64-bit Windows PowerShell 5.1.
+#>
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)]
+    [switch]$ConfirmLabVM,
+
+    [ValidateRange(0, 5)]
+    [int]$HoldSeconds = 0
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+if (-not $ConfirmLabVM) {
+    throw 'Explicit -ConfirmLabVM is required. Do not run on a production host.'
+}
+if ($env:OS -ne 'Windows_NT' -or
+    $PSVersionTable.PSEdition -ne 'Desktop' -or
+    $PSVersionTable.PSVersion.Major -ne 5 -or
+    $PSVersionTable.PSVersion.Minor -ne 1 -or
+    -not [Environment]::Is64BitOperatingSystem -or
+    -not [Environment]::Is64BitProcess) {
+    throw 'Use elevated 64-bit Windows PowerShell 5.1 Desktop on a 64-bit lab VM.'
+}
+if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
+    throw 'FullLanguage is required; do not bypass application-control policy.'
+}
+
+$regExe = Join-Path $env:SystemRoot 'System32\reg.exe'
+if (-not (Test-Path -LiteralPath $regExe -PathType Leaf)) {
+    throw 'System reg.exe was not found.'
+}
+$keyCli = 'HKLM\SOFTWARE\Microsoft\NetSh'
+$keyRelative = 'SOFTWARE\Microsoft\NetSh'
+$runId = [guid]::NewGuid().ToString('N')
+$valueName = 'EDR04-' + $runId
+$workDir = Join-Path ([IO.Path]::GetTempPath()) $valueName
+$dllPath = Join-Path $workDir ($valueName + '.dll')
+$writeAttempted = $false
+$rollbackVerified = $true
+$fileCreated = $false
+$directoryCreated = $false
+
+function Get-TestRegistryValue {
+    $baseKey = $null
+    $key = $null
+    try {
+        $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+            [Microsoft.Win32.RegistryHive]::LocalMachine,
+            [Microsoft.Win32.RegistryView]::Registry64)
+        $key = $baseKey.OpenSubKey($keyRelative, $false)
+        if ($null -eq $key) {
+            throw 'The existing NetSh key is missing; this script will not create it.'
+        }
+        $present = $key.GetValueNames() -contains $valueName
+        if ($present) {
+            [pscustomobject]@{
+                Present = $true
+                Data = $key.GetValue(
+                    $valueName, $null,
+                    [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                Kind = $key.GetValueKind($valueName)
+            }
+        }
+        else {
+            [pscustomobject]@{ Present = $false; Data = $null; Kind = $null }
+        }
+    }
+    finally {
+        if ($null -ne $key) { $key.Dispose() }
+        if ($null -ne $baseKey) { $baseKey.Dispose() }
+    }
+}
+
+function Invoke-RegChecked {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+    & $regExe @Arguments | Out-Host
+    $nativeExitCode = $LASTEXITCODE
+    if ($nativeExitCode -ne 0) {
+        throw ('reg.exe failed with exit code {0}.' -f $nativeExitCode)
+    }
+}
+
+# Printed BEFORE modification so manual rollback remains available.
+Write-Host ('RunID: {0}' -f $runId)
+Write-Host ('Key (64-bit view): {0}' -f $keyCli)
+Write-Host ('Value: {0}' -f $valueName)
+Write-Host ('Zero-byte file: {0}' -f $dllPath)
+Write-Host 'Emergency rollback command (only this unique test value):'
+Write-Host ('& "{0}" delete "{1}" /v "{2}" /f /reg:64' -f $regExe, $keyCli, $valueName)
+Write-Warning 'Lab only. Do not run netsh while the test value exists.'
+
+try {
+    $before = Get-TestRegistryValue
+    if ($before.Present) {
+        throw 'Test value already exists; refusing to overwrite it.'
+    }
+    $null = New-Item -ItemType Directory -Path $workDir -ErrorAction Stop
+    $directoryCreated = $true
+    $null = New-Item -ItemType File -Path $dllPath -ErrorAction Stop
+    $fileCreated = $true
+    if ((Get-Item -LiteralPath $dllPath).Length -ne 0) {
+        throw 'Expected a zero-byte file.'
+    }
+    if ((Get-TestRegistryValue).Present) {
+        throw 'Test value appeared before writing; refusing to overwrite it.'
+    }
+
+    Write-Host ('Write start UTC: {0}' -f [DateTime]::UtcNow.ToString('o'))
+    $writeAttempted = $true
+    $rollbackVerified = $false
+    Invoke-RegChecked -Arguments @(
+        'add', $keyCli, '/v', $valueName,
+        '/t', 'REG_SZ', '/d', $dllPath, '/f', '/reg:64'
+    )
+    $after = Get-TestRegistryValue
+    if (-not $after.Present -or
+        $after.Kind -ne [Microsoft.Win32.RegistryValueKind]::String -or
+        -not [string]::Equals([string]$after.Data, $dllPath,
+            [StringComparison]::Ordinal)) {
+        throw 'Registry verification failed.'
+    }
+    Write-Host 'Verified: unique REG_SZ value points to the zero-byte .dll.'
+    if ($HoldSeconds -gt 0) {
+        Start-Sleep -Seconds $HoldSeconds
+    }
+}
+finally {
+    if ($writeAttempted) {
+        try {
+            $current = Get-TestRegistryValue
+            if ($current.Present) {
+                if ($current.Kind -ne [Microsoft.Win32.RegistryValueKind]::String -or
+                    -not [string]::Equals([string]$current.Data, $dllPath,
+                        [StringComparison]::Ordinal)) {
+                    throw 'Value changed externally; refusing to delete someone else''s data.'
+                }
+                Invoke-RegChecked -Arguments @(
+                    'delete', $keyCli, '/v', $valueName, '/f', '/reg:64'
+                )
+            }
+            if ((Get-TestRegistryValue).Present) {
+                throw 'Test value still exists after rollback.'
+            }
+            $rollbackVerified = $true
+            Write-Host ('Registry rollback verified UTC: {0}' -f [DateTime]::UtcNow.ToString('o'))
+        }
+        catch {
+            Write-Warning ('Registry rollback not verified: {0}' -f $_.Exception.Message)
+            Write-Warning ('Inspect ONLY value {0} in {1}; see the emergency command above.' -f $valueName, $keyCli)
+        }
+    }
+
+    if ($rollbackVerified) {
+        try {
+            if ($fileCreated -and (Test-Path -LiteralPath $dllPath)) {
+                Remove-Item -LiteralPath $dllPath -Force -ErrorAction Stop
+            }
+            if ($directoryCreated -and (Test-Path -LiteralPath $workDir)) {
+                $remaining = @(Get-ChildItem -LiteralPath $workDir -Force)
+                if ($remaining.Count -eq 0) {
+                    Remove-Item -LiteralPath $workDir -ErrorAction Stop
+                }
+                else {
+                    Write-Warning ('Unexpected files retained; no recursive deletion: {0}' -f $workDir)
+                }
+            }
+            Write-Host 'Owned file cleanup finished; no existing registry values were intentionally changed.'
+        }
+        catch {
+            Write-Warning ('File cleanup incomplete: {0}' -f $_.Exception.Message)
+        }
+    }
+    else {
+        Write-Warning ('Test file retained because registry rollback was not verified: {0}' -f $dllPath)
+        throw 'Registry rollback requires manual verification. Do not run netsh yet.'
+    }
+}
