@@ -1,22 +1,25 @@
 # 8.2-checks
 
 
-name: 01_network_directory_traversal
-privileges: local admin
+Name: 01_network_directory_traversal
+Privileges: local admin
 IoA: file_and_directory_discovery_via_powershell_amsi
-note:
+Execution:
+Note:
 ***
 
-name: 02_runkey_persistence 
-privileges: local admin
+Name: 02_runkey_persistence 
+Privileges: local admin
 IoA: explorer_tools_persistence
-note: before reverting changes go to: Computer -> System drive -> Properties -> Tools -> backup: notepad should be opened
+Execution:
+Note: before reverting changes go to: Computer -> System drive -> Properties -> Tools -> backup: notepad should be opened
 ***
 
-name:03_SILENT-outbound_from_unsigned_temporary_directory
-privileges: local user
+Name:03_SILENT-outbound_from_unsigned_temporary_directory
+Privileges: local user
 IoA: powershell_with_network_activity AND powershell_cmdline_executionpolicy_bypass
-note:   there won't be alert because this IoA has only telemetry markup, to find related event with silen IoA tag go to threat hunting an run follosing querry:
+Execution:
+Note:   there won't be alert because this IoA has only telemetry markup, to find related event with silen IoA tag go to threat hunting an run follosing querry:
 
 ```
 SELECT *
@@ -26,20 +29,20 @@ ORDER BY Timestamp DESC
 LIMIT 250  
 ```
 
-event with "connection" type is actuall network connection, with "process" - script execution
+==event with "connection" type is actuall network connection, with "process" - script execution==
 ***
 
-name: 04_modify_registry_using_cli_registry_tool
-privileges: local admin
+Name: 04_modify_registry_using_cli_registry_tool
+Privileges: local admin
 IoA: add_netsh_helper_dll
-execution: ./04_modify_registry_using_cli_registry_tool.ps1 -ConfirmLabVM
-note: execute script on test VM only, prepare VM snapshot BEFORE script execution, do not execute netsh before cleaning up and removing fake files.
+Execution: ./04_modify_registry_using_cli_registry_tool.ps1 -ConfirmLabVM
+Note: execute script on test VM only, prepare VM snapshot BEFORE script execution, do not execute netsh before cleaning up and removing fake files.
 
-name: 06_registing_time_provider_DLL
-privileges: local admin
+Name: 06_registing_time_provider_DLL
+Privileges: local admin
 IoA: persistence_via_time_provider_registry_key
-execution: ./06_registing_time_provider_DLL.ps1
-note:
+Execution: ./06_registing_time_provider_DLL.ps1
+Note:
 - The test does not load or run a DLL as an active provider. This is intentional: it avoids creating persistence or interfering with the Windows Time service.
 - DllName points only to the standard W32Time.dll. No files are copied to %TEMP%, %SystemRoot%, or any other directory.
 - Enabled is always set to 0. Do not change it to 1 for this safe test.
