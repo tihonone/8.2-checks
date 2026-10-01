@@ -29,19 +29,19 @@ ORDER BY Timestamp DESC
 LIMIT 250  
 ```
 
-==event with "connection" type is actuall network connection, with "process" - script execution==
+__event with "connection" type is actuall network connection, with "process" - script execution__
 ***
 
-Name: 04_modify_registry_using_cli_registry_tool
-Privileges: local admin
-IoA: add_netsh_helper_dll
-Execution: ./04_modify_registry_using_cli_registry_tool.ps1 -ConfirmLabVM
-Note: execute script on test VM only, prepare VM snapshot BEFORE script execution, do not execute netsh before cleaning up and removing fake files.
-
-Name: 06_registing_time_provider_DLL
-Privileges: local admin
-IoA: persistence_via_time_provider_registry_key
-Execution: ./06_registing_time_provider_DLL.ps1
+Name: 04_modify_registry_using_cli_registry_tool. 
+Privileges: local admin. 
+IoA: add_netsh_helper_dll. 
+Execution: ./04_modify_registry_using_cli_registry_tool.ps1 -ConfirmLabVM. 
+Note: execute script on test VM only, prepare VM snapshot BEFORE script execution, do not execute netsh before cleaning up and removing fake files.  
+  
+Name: 06_registing_time_provider_DLL. 
+Privileges: local admin. 
+IoA: persistence_via_time_provider_registry_key. 
+Execution: ./06_registing_time_provider_DLL.ps1. 
 Note:
 - The test does not load or run a DLL as an active provider. This is intentional: it avoids creating persistence or interfering with the Windows Time service.
 - DllName points only to the standard W32Time.dll. No files are copied to %TEMP%, %SystemRoot%, or any other directory.
