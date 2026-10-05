@@ -4,22 +4,22 @@
 Name: 01_network_directory_traversal<br />
 Privileges: local admin<br />
 IoA: file_and_directory_discovery_via_powershell_amsi<br />
-Execution:<br />
+Execution:./01_network_directory_traversal.ps1<br />
 Note:<br />
 ***
 
-Name: 02_runkey_persistence <br />
+Name: 03_runkey_persistence <br />
 Privileges: local admin<br />
 IoA: explorer_tools_persistence<br />
-Execution:<br />
+Execution:./03_runkey_persistence.ps1 <br />
 Note: before reverting changes go to: Computer -> System drive -> Properties -> Tools -> backup: notepad should be opened<br />
 ***
 
-Name:03_SILENT-outbound_from_unsigned_temporary_directory<br />
+Name:04_SILENT-outbound_from_unsigned_temporary_directory<br />
 Privileges: local user<br />
 IoA: powershell_with_network_activity AND powershell_cmdline_executionpolicy_bypass<br />
-Execution:<br />
-Note:   there won't be alert because this IoA has only telemetry markup, to find related event with silen IoA tag go to threat hunting an run follosing querry:<br />
+Execution:./04_SILENT-outbound_from_unsigned_temporary_directory.ps1<br />
+Note:   there won't be alert because this IoA has only telemetry markup, to find related event with silen IoA tag go to threat hunting an run following querry:<br />
 
 ```
 SELECT *
@@ -32,7 +32,7 @@ LIMIT 250
 __event with "connection" type is actuall network connection, with "process" - script execution__<br />
 ***
 
-Name: 04_modify_registry_using_cli_registry_tool <br />
+Name: 05_modify_registry_using_cli_registry_tool <br />
 Privileges: local admin <br />
 IoA: add_netsh_helper_dll <br />
 Execution: ./04_modify_registry_using_cli_registry_tool.ps1 -ConfirmLabVM <br />
