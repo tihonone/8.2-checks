@@ -1,0 +1,76 @@
+#requires -Version 5.1
+#requires -RunAsAdministrator
+<#
+LEGACY RUN VARIANT: remove only the retained Run value and DLL in its manifest.
+Never deletes the Run key, drivers directory, lab loader EXE, or source DLL.
+Does not kill any process. Close/wait for the lab loader before removing its DLL.
+Use -WhatIf to preview. A modified value or DLL causes refusal.
+#>
+[CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
+param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$ManifestPath
+)
+$ErrorActionPreference = 'Stop'
+if (-not [Environment]::Is64BitProcess) { throw 'Use 64-bit Windows PowerShell.' }
+$ManifestFile = Get-Item -LiteralPath $ManifestPath -ErrorAction Stop
+if ($ManifestFile.PSIsContainer -or $ManifestFile.Name -notmatch '^EDR_Scenario13_Artifacts_[0-9a-f]{32}\.json$') {
+    throw 'Expected the scenario 13 JSON cleanup manifest.'
+}
+$State = Get-Content -LiteralPath $ManifestFile.FullName -Raw | ConvertFrom-Json
+$RegistryPath = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run'
+$RunValueName = 'EDRSafeUnsignedDllTest'
+if ($State.SchemaVersion -ne 1 -or $State.Scenario -cne 'EDR13_LabSpoolsv' -or
+    $State.RegistryPath -cne $RegistryPath -or $State.RunValueName -cne $RunValueName) {
+    throw 'Manifest schema or registry target does not match this test.'
+}
+$DllPath = [System.IO.Path]::GetFullPath([string]$State.DllPath)
+if ($DllPath -notmatch '^C:\\Windows\\System32\\spool\\drivers\\EDR_Module_[0-9a-f]{32}\.dll$' -or
+    $State.DllSha256 -notmatch '^[0-9a-fA-F]{64}$') {
+    throw 'Refusing cleanup outside the exact test DLL path pattern.'
+}
+$ExpectedData = '"' + $DllPath + '"'
+if ($State.LogonAutorunConfigured -eq $true) {
+    $LoaderPath = [System.IO.Path]::GetFullPath([string]$State.LoaderPath)
+    if ([System.IO.Path]::GetFileName($LoaderPath) -ine 'spoolsv.exe' -or
+        [int]$State.HoldSeconds -lt 0 -or [int]$State.HoldSeconds -gt 300) {
+        throw 'Invalid loader command in manifest.'
+    }
+    $ExpectedData = '"' + $LoaderPath + '" "' + $DllPath + '" ' + [int]$State.HoldSeconds
+}
+if ([string]$State.RunData -cne $ExpectedData) { throw 'Manifest Run data is inconsistent.' }
+
+# Validate all targets before making either change.
+$ValueExists = $false
+if (Test-Path -LiteralPath $RegistryPath) {
+    $Key = Get-Item -LiteralPath $RegistryPath
+    $ValueExists = $Key.GetValueNames() -contains $RunValueName
+    if ($ValueExists -and ($Key.GetValue($RunValueName) -cne $ExpectedData -or
+        $Key.GetValueKind($RunValueName) -ne [Microsoft.Win32.RegistryValueKind]::String)) {
+        throw 'Run value differs from manifest. No cleanup performed.'
+    }
+}
+$DllExists = Test-Path -LiteralPath $DllPath
+if ($DllExists -and (-not (Test-Path -LiteralPath $DllPath -PathType Leaf) -or
+    (Get-FileHash -LiteralPath $DllPath -Algorithm SHA256).Hash -ine [string]$State.DllSha256)) {
+    throw 'Test DLL differs from manifest. No cleanup performed.'
+}
+Write-Host "Run value: $RegistryPath\$RunValueName"
+Write-Host "Run data: $ExpectedData"
+Write-Host "DLL: $DllPath"
+if ($PSCmdlet.ShouldProcess("$RegistryPath\$RunValueName and $DllPath", 'Remove retained scenario 13 artifacts')) {
+    # Disable future logon launches first, then delete only the recorded DLL.
+    if ($ValueExists) {
+        Remove-ItemProperty -LiteralPath $RegistryPath -Name $RunValueName -ErrorAction Stop
+    }
+    if ($DllExists) { Remove-Item -LiteralPath $DllPath -Force -ErrorAction Stop }
+    if (Test-Path -LiteralPath $RegistryPath) {
+        if ((Get-Item -LiteralPath $RegistryPath).GetValueNames() -contains $RunValueName) {
+            throw 'Run value still exists.'
+        }
+    }
+    if (Test-Path -LiteralPath $DllPath) { throw 'Test DLL still exists.' }
+    Remove-Item -LiteralPath $ManifestFile.FullName -ErrorAction Stop
+    Write-Host 'CLEANUP VERIFIED: test Run value, test DLL and manifest removed; shared key/directory and lab EXE preserved.'
+}
