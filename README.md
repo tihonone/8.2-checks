@@ -127,7 +127,21 @@ IoA: windows_command_shell_usage(log entry only),anomaly_in_the_windows_critical
 Execution: ./16_unexpected_smss.exe_parent.ps1<br />
 Note: thre alerts will be rised, use any to reveal all conneted events on single process tree.<br />
 ***
-
+Name: 17_autorun_unsigned_servicedll<br />
+Priviliges: local admin <br />
+IoA:
+Preparation: download from: , and put ps1 script and downloaded EDR_Unsigned_Module.dll and spoolsv.exe into same folder
+Execution:<br />
+```
+& 'C:\<path>\<to>\<containing>\<folder>\EDRSafeUnsignedServiceDllTest.ps1' `
+    -SourceDllPath 'C:\<path>\<to>\<containing>\<folder>\EDR_Unsigned_Module.dll' `
+    -LoaderExePath 'C:\<path>\<to>\<containing>\<folder>\spoolsv.exe' `
+    -HoldSeconds 60 `
+    -KeepArtifacts
+```
+Note: pay attention to paths, adjust them acordingly!!
+***
+<br />
 Name: 18_modify_winlogon_registry_settings <br />
 Privileges: local admin<br />
 IoA: change_winlogon_helper_dll_via_registry, collecting_credentials_from_registry_via_reg, query_registry_for_stored_credentials_via_powershell<br />
