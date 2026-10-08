@@ -1,0 +1,432 @@
+#requires -Version 5.1
+#requires -RunAsAdministrator
+<#
+LAB V3: real OWN_PROCESS test service, NOT Windows Print Spooler.
+LocalService account; start=demand; selected-user logon task starts it via SCM.
+Parameters\ServiceDll is read by OUR executable; this is not svchost hosting.
+DLL stays in C:\Windows\System32\spool\drivers; staged EXE in a unique ProgramData folder.
+Default cleanup. -KeepArtifacts preserves successful setup for next-logon testing.
+Read-only service information is shown by a separate interactive-session helper.
+The helper source is embedded below and staged automatically; no extra UI file is required.
+Use only reviewed benign test DLL/EXE. Existing services/tasks are never overwritten.
+#>
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory=$true)][string]$SourceDllPath,
+    [string]$LoaderExePath=(Join-Path $PSScriptRoot 'spoolsv.exe'),
+    [string]$LogonUser=([Security.Principal.WindowsIdentity]::GetCurrent().Name),
+    [ValidateRange(1,300)][int]$HoldSeconds=60,
+    [switch]$KeepArtifacts
+)
+$ErrorActionPreference='Stop'
+$ServiceName='EDRSafeUnsignedDllService'
+$TaskName='EDRScenario13_StartTestServiceAtLogon'
+$InfoTaskName='EDRScenario13_ShowServiceInfoAtLogon'
+$RegistryPath="HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName"
+$ParametersPath="$RegistryPath\Parameters"
+$Id=[Guid]::NewGuid().ToString('N')
+$StageDirectory=Join-Path $env:ProgramData "EDRScenario13_$Id"
+$ServiceExe=Join-Path $StageDirectory 'spoolsv.exe'
+$LogPath=Join-Path $StageDirectory 'module.log'
+$ManifestPath=Join-Path $StageDirectory 'EDR_Scenario13_ServiceArtifacts.json'
+$InfoScript=Join-Path $StageDirectory 'Show_EDR_ServiceInfo.ps1'
+$DllPath="C:\Windows\System32\spool\drivers\EDR_Module_$Id.dll"
+$ImagePath='"'+$ServiceExe+'" --service '+$ServiceName
+$ScExe=Join-Path $env:WINDIR 'System32\sc.exe'
+$TaskDescription="EDR13:$Id; start test service at selected user logon"
+$InfoTaskDescription="EDR13:$Id; read-only service information window at selected user logon"
+$PowerShellExe=Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$InfoArguments='-NoProfile -STA -File "'+$InfoScript+'" -ServiceExePath "'+$ServiceExe+'" -AutoCloseSeconds 120'
+$InfoTaskCreated=$false
+$InfoProcess=$null
+$StageCreated=$false; $DllCreated=$false; $ServiceCreated=$false; $TaskCreated=$false
+$LocalCheckPassed=$false; $ManifestCreated=$false; $Failure=$null
+$CleanupErrors=New-Object 'System.Collections.Generic.List[string]'
+# Literal source: the setup stages this script for both the local window and logon task.
+# Do not interpolate it here; variables belong to the separate interactive process.
+$InfoScriptContent=@'
+#requires -Version 5.1
+<#
+Read-only information window for the lab service, not Windows Print Spooler.
+Runs in the interactive USER session, never inside the service process.
+Does not start/stop services, load DLLs, write registry or change configuration.
+#>
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory=$true)][string]$ServiceExePath,
+    [ValidateRange(10,600)][int]$AutoCloseSeconds=120
+)
+$ErrorActionPreference='Stop'
+$ServiceName='EDRSafeUnsignedDllService'
+if (-not [Environment]::UserInteractive) {
+    throw 'This read-only window must run in an interactive user session.'
+}
+$ExpectedExe=[IO.Path]::GetFullPath($ServiceExePath)
+$Parent=[IO.Path]::GetDirectoryName($ExpectedExe)
+if ([IO.Path]::GetFileName($ExpectedExe) -ine 'spoolsv.exe' -or
+    [IO.Path]::GetFileName($Parent) -notmatch '^EDRScenario13_[0-9a-f]{32}$' -or
+    [IO.Path]::GetDirectoryName($Parent) -ine [IO.Path]::GetFullPath($env:ProgramData).TrimEnd('\')) {
+    throw 'Expected the scenario-specific lab executable in ProgramData.'
+}
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+[Windows.Forms.Application]::EnableVisualStyles()
+$Form=New-Object Windows.Forms.Form
+$Form.Text='EDR lab service information'
+$Form.StartPosition='CenterScreen'
+$Form.ClientSize=New-Object Drawing.Size(760,350)
+$Form.MinimumSize=New-Object Drawing.Size(620,360)
+$Form.Font=New-Object Drawing.Font('Segoe UI',10)
+$Heading=New-Object Windows.Forms.Label
+$Heading.Text='LAB TEST SERVICE - NOT WINDOWS PRINT SPOOLER'
+$Heading.Location=New-Object Drawing.Point(18,16)
+$Heading.Size=New-Object Drawing.Size(720,30)
+$Heading.Anchor='Top,Left,Right'
+$Details=New-Object Windows.Forms.TextBox
+$Details.Multiline=$true
+$Details.ReadOnly=$true
+$Details.ScrollBars='Both'
+$Details.WordWrap=$false
+$Details.Location=New-Object Drawing.Point(18,55)
+$Details.Size=New-Object Drawing.Size(724,230)
+$Details.Anchor='Top,Bottom,Left,Right'
+$Details.Font=New-Object Drawing.Font('Consolas',10)
+$CloseButton=New-Object Windows.Forms.Button
+$CloseButton.Text='Close'
+$CloseButton.Location=New-Object Drawing.Point(642,300)
+$CloseButton.Size=New-Object Drawing.Size(100,32)
+$CloseButton.Anchor='Bottom,Right'
+$CloseButton.Add_Click({ $Form.Close() })
+$Form.Controls.AddRange(@($Heading,$Details,$CloseButton))
+$Deadline=[DateTime]::UtcNow.AddSeconds($AutoCloseSeconds)
+$Update={
+    $State='Unavailable'; $PidText='-'; $ActualPath='-'
+    try {
+        $Service=Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+        if ($null -ne $Service) {
+            $State=$Service.State
+            $PidText=[string]$Service.ProcessId
+            $ActualPath=$Service.PathName
+        } else { $State='Not registered / already cleaned up' }
+    } catch { $State='Cannot read service state: '+$_.Exception.Message }
+    $Text=@(
+        "Service name: $ServiceName"
+        "Service file: $([IO.Path]::GetFileName($ExpectedExe))"
+        "Full file path: $ExpectedExe"
+        ''
+        "Current state: $State"
+        "Service PID: $PidText"
+        "SCM ImagePath: $ActualPath"
+        ''
+        'This window does not start or stop the service.'
+        'It is not proof of DLL loading; check the service log and EDR.'
+        "The window closes automatically after $AutoCloseSeconds seconds."
+    ) -join "`r`n"
+    if ($Details.Text -cne $Text) { $Details.Text=$Text }
+}
+$Timer=New-Object Windows.Forms.Timer
+$Timer.Interval=1000
+$Timer.Add_Tick({
+    & $Update
+    if ([DateTime]::UtcNow -ge $Deadline) { $Form.Close() }
+})
+$Form.Add_Shown({ & $Update; $Timer.Start() })
+try { [void]$Form.ShowDialog() }
+finally { $Timer.Stop(); $Timer.Dispose(); $Form.Dispose() }
+'@
+function Invoke-Sc {
+    param([string[]]$Arguments)
+    $Saved=$ErrorActionPreference
+    try {
+        $ErrorActionPreference='Continue'
+        $Output=& $ScExe @Arguments 2>&1; $Code=$LASTEXITCODE
+    } finally { $ErrorActionPreference=$Saved }
+    foreach ($Line in $Output) { Write-Host ([string]$Line) }
+    if ($Code -ne 0) { throw "sc.exe failed ($Code): $($Arguments -join ' ')" }
+}
+function Get-TestService {
+    Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+}
+function Copy-New {
+    param([string]$Source,[string]$Target,[ref]$Created)
+    $InputStream=$null; $OutputStream=$null
+    try {
+        $InputStream=[IO.File]::OpenRead($Source)
+        $OutputStream=[IO.File]::Open($Target,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+        $Created.Value=$true; $InputStream.CopyTo($OutputStream)
+    } finally {
+        if ($null -ne $OutputStream) { $OutputStream.Dispose() }
+        if ($null -ne $InputStream) { $InputStream.Dispose() }
+    }
+}
+function Add-LocalServiceAccess {
+    param([string]$Path,[Security.AccessControl.FileSystemRights]$Rights)
+    $Acl=Get-Acl -LiteralPath $Path
+    $Sid=New-Object Security.Principal.SecurityIdentifier 'S-1-5-19'
+    $Rule=New-Object Security.AccessControl.FileSystemAccessRule(
+        $Sid,$Rights,[Security.AccessControl.AccessControlType]::Allow)
+    $Acl.AddAccessRule($Rule); Set-Acl -LiteralPath $Path -AclObject $Acl
+}
+try {
+    if ($PSVersionTable.PSEdition -ne 'Desktop' -or -not [Environment]::Is64BitProcess) {
+        throw 'Use 64-bit Windows PowerShell 5.1 as administrator.'
+    }
+    Import-Module ScheduledTasks -ErrorAction Stop
+    if ($null -ne (Get-ScheduledTask -TaskName $InfoTaskName -TaskPath '\' -ErrorAction SilentlyContinue)) {
+        throw "Existing information task will not be overwritten: $InfoTaskName"
+    }
+    # Individual user SID allows the non-elevated UI to read only its lab folder.
+    $LogonAccount=New-Object Security.Principal.NTAccount $LogonUser
+    $LogonSid=$LogonAccount.Translate([Security.Principal.SecurityIdentifier])
+    if ((Test-Path -LiteralPath $RegistryPath) -or $null -ne (Get-TestService)) {
+        throw "Existing test service/key will not be overwritten: $ServiceName"
+    }
+    if ($null -ne (Get-ScheduledTask -TaskName $TaskName -TaskPath '\' -ErrorAction SilentlyContinue)) {
+        throw "Existing task will not be overwritten: $TaskName"
+    }
+    $OldRunKey='HKLM:\Software\Microsoft\Windows\CurrentVersion\Run'
+    if ((Test-Path -LiteralPath $OldRunKey) -and
+        ((Get-Item -LiteralPath $OldRunKey).GetValueNames() -contains 'EDRSafeUnsignedDllTest')) {
+        throw 'Old Run artifacts exist. Use Cleanup_EDR_Scenario13_RunLegacy.ps1 with their old manifest before this test.'
+    }
+    if (-not (Test-Path -LiteralPath ([IO.Path]::GetDirectoryName($DllPath)) -PathType Container)) {
+        throw 'Existing C:\Windows\System32\spool\drivers directory is required.'
+    }
+    if ((Test-Path -LiteralPath $StageDirectory) -or (Test-Path -LiteralPath $DllPath)) {
+        throw 'Generated target already exists; refusing overwrite.'
+    }
+    if (-not (Test-Path -LiteralPath $SourceDllPath -PathType Leaf)) { throw 'SourceDllPath must be a .dll file, not a directory.' }
+    if (-not (Test-Path -LiteralPath $LoaderExePath -PathType Leaf)) { throw 'Build the new service-compatible spoolsv.exe V3 first.' }
+    $SourceDll=(Get-Item -LiteralPath $SourceDllPath).FullName
+    $SourceExe=(Get-Item -LiteralPath $LoaderExePath).FullName
+    $WindowsPrefix=[IO.Path]::GetFullPath($env:WINDIR).TrimEnd('\')+'\'
+    if ([IO.Path]::GetFileName($SourceExe) -ine 'spoolsv.exe' -or
+        $SourceExe.StartsWith($WindowsPrefix,[StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Use only your lab spoolsv.exe outside Windows, not the system binary.'
+    }
+    foreach ($Path in @($SourceDll,$SourceExe)) {
+        if ((Get-AuthenticodeSignature -FilePath $Path).Status -ne 'NotSigned') { throw "Expected NotSigned: $Path" }
+    }
+    $Reader=New-Object IO.BinaryReader ([IO.File]::OpenRead($SourceDll))
+    try {
+        if ($Reader.ReadUInt16() -ne 0x5A4D) { throw 'DLL is not a PE file.' }
+        $Reader.BaseStream.Position=0x3C; $Pe=$Reader.ReadInt32()
+        if ($Pe -lt 64 -or $Pe -gt ($Reader.BaseStream.Length-264)) { throw 'Invalid PE offset.' }
+        $Reader.BaseStream.Position=$Pe
+        if ($Reader.ReadUInt32() -ne 0x4550 -or $Reader.ReadUInt16() -ne 0x8664) { throw 'DLL must be AMD64.' }
+        $Reader.BaseStream.Position=$Pe+22
+        if (($Reader.ReadUInt16() -band 0x2000) -eq 0 -or $Reader.ReadUInt16() -ne 0x20B) { throw 'Expected PE32+ DLL.' }
+        $Reader.BaseStream.Position=$Pe+24+112+14*8
+        if ($Reader.ReadUInt32() -ne 0 -or $Reader.ReadUInt32() -ne 0) { throw 'Managed DLL rejected.' }
+    } finally { $Reader.Dispose() }
+    $VersionOutput=& $SourceExe --version
+    if ($LASTEXITCODE -ne 0 -or ($VersionOutput -join "`n").Trim() -cne 'EDR_LAB_SERVICE_V3') {
+        throw 'Old console loader is not a service. Rebuild EDR_Spoolsv_LabService.c; --version must print EDR_LAB_SERVICE_V3.'
+    }
+    $DllHash=(Get-FileHash -LiteralPath $SourceDll -Algorithm SHA256).Hash
+    $ExeHash=(Get-FileHash -LiteralPath $SourceExe -Algorithm SHA256).Hash
+    New-Item -ItemType Directory -Path $StageDirectory | Out-Null
+    $StageCreated=$true
+    $Acl=Get-Acl -LiteralPath $StageDirectory
+    $Acl.SetAccessRuleProtection($true,$false)
+    foreach ($SidText in @('S-1-5-32-544','S-1-5-18','S-1-5-19')) {
+        $Rights=if ($SidText -eq 'S-1-5-19') { 'ReadAndExecute' } else { 'FullControl' }
+        $Sid=New-Object Security.Principal.SecurityIdentifier $SidText
+        $Rule=New-Object Security.AccessControl.FileSystemAccessRule(
+            $Sid,[Security.AccessControl.FileSystemRights]$Rights,
+            [Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit',
+            [Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow)
+        $Acl.AddAccessRule($Rule)
+    }
+    $UserReadRule=New-Object Security.AccessControl.FileSystemAccessRule(
+        $LogonSid,[Security.AccessControl.FileSystemRights]::ReadAndExecute,
+        [Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit',
+        [Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow)
+    $Acl.AddAccessRule($UserReadRule)
+    Set-Acl -LiteralPath $StageDirectory -AclObject $Acl
+    $ExeCreated=$false
+    Copy-New -Source $SourceExe -Target $ServiceExe -Created ([ref]$ExeCreated)
+    Copy-New -Source $SourceDll -Target $DllPath -Created ([ref]$DllCreated)
+    # Generate the tracked UI artifact from this setup's embedded source.
+    # CreateNew refuses overwrites; inherited ACL permits user read/execute only.
+    $InfoStream=$null
+    try {
+        $InfoStream=[IO.File]::Open($InfoScript,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+        $InfoBytes=[Text.Encoding]::UTF8.GetBytes($InfoScriptContent+"`r`n")
+        $InfoStream.Write($InfoBytes,0,$InfoBytes.Length)
+    } finally {
+        if ($null -ne $InfoStream) { $InfoStream.Dispose() }
+    }
+    $InfoHash=(Get-FileHash -LiteralPath $InfoScript -Algorithm SHA256).Hash
+    if ((Get-FileHash $ServiceExe -Algorithm SHA256).Hash -ne $ExeHash -or
+        (Get-FileHash $DllPath -Algorithm SHA256).Hash -ne $DllHash) { throw 'Copied file hashes differ.' }
+    if ((Get-AuthenticodeSignature -FilePath $DllPath).Status -ne 'NotSigned') { throw 'Copied DLL must be NotSigned.' }
+    Add-LocalServiceAccess -Path $DllPath -Rights ReadAndExecute
+    New-Item -ItemType File -Path $LogPath | Out-Null
+    Add-LocalServiceAccess -Path $LogPath -Rights Modify
+    # Escape embedded quotes for the Windows PowerShell native argument marshaller.
+    $ScImage=$ImagePath.Replace('"','\"')
+    Invoke-Sc -Arguments @('create',$ServiceName,'type=','own','start=','demand',
+        'binPath=',$ScImage,'obj=','NT AUTHORITY\LocalService','DisplayName=','EDR lab unsigned DLL service')
+    $ServiceCreated=$true
+    New-Item -Path $ParametersPath | Out-Null
+    New-ItemProperty -LiteralPath $ParametersPath -Name ServiceDll -PropertyType ExpandString -Value $DllPath | Out-Null
+    New-ItemProperty -LiteralPath $ParametersPath -Name LogPath -PropertyType String -Value $LogPath | Out-Null
+    New-ItemProperty -LiteralPath $ParametersPath -Name HoldSeconds -PropertyType DWord -Value $HoldSeconds | Out-Null
+    $Config=Get-ItemProperty -LiteralPath $RegistryPath
+    if ($Config.ImagePath -cne $ImagePath -or $Config.Start -ne 3 -or $Config.Type -ne 16 -or
+        $Config.ObjectName -ine 'NT AUTHORITY\LocalService') {
+        throw 'Service registry validation failed; inspect ImagePath quoting.'
+    }
+    $Action=New-ScheduledTaskAction -Execute $ScExe -Argument "start $ServiceName"
+    $Trigger=New-ScheduledTaskTrigger -AtLogOn -User $LogonUser
+    $Principal=New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    $Settings=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    Register-ScheduledTask -TaskName $TaskName -TaskPath '\' -Action $Action -Trigger $Trigger `
+        -Principal $Principal -Settings $Settings -Description $TaskDescription | Out-Null
+    $TaskCreated=$true
+    # Separate user-token task: visible UI, no elevation and no SCM control.
+    $InfoAction=New-ScheduledTaskAction -Execute $PowerShellExe -Argument $InfoArguments
+    $InfoPrincipal=New-ScheduledTaskPrincipal -UserId $LogonUser -LogonType Interactive -RunLevel Limited
+    $InfoSettings=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit (New-TimeSpan -Minutes 3)
+    Register-ScheduledTask -TaskName $InfoTaskName -TaskPath '\' -Action $InfoAction -Trigger $Trigger `
+        -Principal $InfoPrincipal -Settings $InfoSettings -Description $InfoTaskDescription | Out-Null
+    $InfoTaskCreated=$true
+    Write-Host "SERVICE: $ServiceName; account=LocalService; ImagePath=$ImagePath"
+    Write-Host "PARAMETER: $ParametersPath\ServiceDll = $DllPath"
+    Write-Host "LOGON TASK: $TaskName; user=$LogonUser"
+    Write-Host "INFORMATION WINDOW TASK: $InfoTaskName; interactive user=$LogonUser"
+    Write-Host "DLL SHA256: $DllHash"
+    Write-Host ("LOCAL SCM START UTC: "+[DateTime]::UtcNow.ToString('o'))
+    Invoke-Sc -Arguments @('start',$ServiceName)
+    $Deadline=[DateTime]::UtcNow.AddSeconds(30)
+    do {
+        $Log=Get-Content -LiteralPath $LogPath -Raw
+        if ($Log -match 'MODULE LOAD VERIFIED') { break }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $Deadline)
+    if ($Log -notmatch 'MODULE LOAD VERIFIED') { throw "No confirmed module load. Inspect $LogPath" }
+    Write-Host $Log
+    # The setup is running in the user's desktop, unlike the SCM service.
+    $InfoProcess=Start-Process -FilePath $PowerShellExe -ArgumentList $InfoArguments -PassThru -WindowStyle Normal
+    Write-Host "Information helper PID: $($InfoProcess.Id). Window runs separately from the service."
+    $Deadline=[DateTime]::UtcNow.AddSeconds($HoldSeconds+20)
+    do {
+        $Observed=Get-TestService
+        if ($null -ne $Observed -and $Observed.State -eq 'Stopped') { break }
+        Start-Sleep -Milliseconds 500
+    } while ([DateTime]::UtcNow -lt $Deadline)
+    $Log=Get-Content -LiteralPath $LogPath -Raw
+    if ($null -eq $Observed -or $Observed.State -ne 'Stopped' -or
+        $Log -notmatch 'MODULE UNLOAD VERIFIED' -or $Log -match 'FAILED') { throw 'Service did not finish cleanly.' }
+    Write-Host $Log
+    if ($KeepArtifacts) {
+        [ordered]@{
+            SchemaVersion=3; Scenario='EDR13_LabService'; Id=$Id
+            ServiceName=$ServiceName; ImagePath=$ImagePath; ParametersPath=$ParametersPath
+            TaskName=$TaskName; TaskDescription=$TaskDescription
+            TaskExecute=$ScExe; TaskArguments="start $ServiceName"; LogonUser=$LogonUser
+            InfoTaskName=$InfoTaskName; InfoTaskDescription=$InfoTaskDescription
+            InfoExecute=$PowerShellExe; InfoArguments=$InfoArguments
+            InfoScript=$InfoScript; InfoSha256=$InfoHash
+            StageDirectory=$StageDirectory; ServiceExe=$ServiceExe; ExeSha256=$ExeHash
+            DllPath=$DllPath; DllSha256=$DllHash; LogPath=$LogPath; HoldSeconds=$HoldSeconds
+            CreatedUtc=[DateTime]::UtcNow.ToString('o')
+        } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $ManifestPath -Encoding UTF8
+        $ManifestCreated=$true
+    }
+    $LocalCheckPassed=$true
+} catch { $Failure=$_; Write-Warning ("TEST FAILED: "+$_.Exception.Message) }
+finally {
+    $Preserve=$KeepArtifacts -and $LocalCheckPassed -and $ManifestCreated
+    # Close only the UI process created by this invocation, never service processes by name.
+    if ($null -ne $InfoProcess) {
+        try {
+            if (-not $InfoProcess.HasExited) {
+                [void]$InfoProcess.CloseMainWindow()
+                if (-not $InfoProcess.WaitForExit(3000)) { $InfoProcess.Kill(); $InfoProcess.WaitForExit() }
+            }
+        } catch { Write-Warning ("Information window cleanup: "+$_.Exception.Message) }
+        finally { $InfoProcess.Dispose() }
+    }
+    if (-not $Preserve) {
+        if ($InfoTaskCreated) {
+            try {
+                $InfoTask=Get-ScheduledTask -TaskName $InfoTaskName -TaskPath '\' -ErrorAction SilentlyContinue
+                if ($null -ne $InfoTask -and $InfoTask.Description -cne $InfoTaskDescription) {
+                    throw 'Information task modified externally; refusing deletion.'
+                }
+                if ($null -ne $InfoTask) {
+                    if ($InfoTask.State -eq 'Running') {
+                        Stop-ScheduledTask -TaskName $InfoTaskName -TaskPath '\' -ErrorAction Stop
+                    }
+                    Unregister-ScheduledTask -TaskName $InfoTaskName -TaskPath '\' -Confirm:$false
+                }
+            } catch { $CleanupErrors.Add("Information task cleanup: $($_.Exception.Message)") }
+        }
+        if ($TaskCreated) {
+            try {
+                $Task=Get-ScheduledTask -TaskName $TaskName -TaskPath '\' -ErrorAction SilentlyContinue
+                if ($null -ne $Task -and $Task.Description -cne $TaskDescription) { throw 'Task modified externally; refusing deletion.' }
+                if ($null -ne $Task) { Unregister-ScheduledTask -TaskName $TaskName -TaskPath '\' -Confirm:$false }
+            }
+            catch { $CleanupErrors.Add("Task cleanup: $($_.Exception.Message)") }
+        }
+        if ($ServiceCreated) {
+            try {
+                $Observed=Get-TestService
+                if ($null -ne $Observed -and $Observed.PathName -cne $ImagePath) {
+                    throw 'Service ImagePath modified externally; refusing stop/delete.'
+                }
+                if ($null -ne $Observed -and $Observed.State -ne 'Stopped') { Stop-Service -Name $ServiceName -ErrorAction Stop }
+                $Deadline=[DateTime]::UtcNow.AddSeconds(15)
+                do {
+                    $Observed=Get-TestService
+                    if ($null -eq $Observed -or $Observed.State -eq 'Stopped') { break }
+                    Start-Sleep -Milliseconds 250
+                } while ([DateTime]::UtcNow -lt $Deadline)
+                if ($null -ne $Observed -and $Observed.State -ne 'Stopped') { throw 'Service still running.' }
+                Invoke-Sc -Arguments @('delete',$ServiceName)
+                $Deadline=[DateTime]::UtcNow.AddSeconds(10)
+                do {
+                    if (-not (Test-Path -LiteralPath $RegistryPath)) { break }
+                    Start-Sleep -Milliseconds 250
+                } while ([DateTime]::UtcNow -lt $Deadline)
+                if (Test-Path -LiteralPath $RegistryPath) { throw 'Service deletion is pending; key remains.' }
+            } catch { $CleanupErrors.Add("Service cleanup: $($_.Exception.Message)") }
+        }
+        if ($CleanupErrors.Count -eq 0) {
+            if ($DllCreated) {
+                try { Remove-Item -LiteralPath $DllPath -Force -ErrorAction Stop }
+                catch { $CleanupErrors.Add("DLL cleanup: $($_.Exception.Message)") }
+            }
+            if ($StageCreated -and $CleanupErrors.Count -eq 0) {
+                try { Remove-Item -LiteralPath $StageDirectory -Recurse -Force -ErrorAction Stop }
+                catch { $CleanupErrors.Add("Unique lab folder cleanup: $($_.Exception.Message)") }
+            }
+        }
+        if (($StageCreated -or $ServiceCreated) -and $CleanupErrors.Count -eq 0) {
+            if ((Test-Path -LiteralPath $StageDirectory) -or (Test-Path -LiteralPath $DllPath) -or
+                (Test-Path -LiteralPath $RegistryPath) -or
+                $null -ne (Get-ScheduledTask -TaskName $TaskName -TaskPath '\' -ErrorAction SilentlyContinue) -or
+                $null -ne (Get-ScheduledTask -TaskName $InfoTaskName -TaskPath '\' -ErrorAction SilentlyContinue)) {
+                $CleanupErrors.Add('Final cleanup verification found remaining test artifacts.')
+            }
+        }
+        if (($StageCreated -or $ServiceCreated) -and $CleanupErrors.Count -eq 0) {
+            Write-Host 'CLEANUP VERIFIED: own service-start and information tasks, test service, DLL and unique lab folder removed.'
+        }
+    } else {
+        Write-Warning 'ARTIFACTS RETAINED: test service and selected-user logon/information tasks remain until manual cleanup.'
+        Write-Host "Cleanup manifest: $ManifestPath"
+        Write-Host "Service log: $LogPath"
+        Write-Host 'Next-logon startup is CONFIGURED, NOT YET VERIFIED.'
+    }
+    foreach ($Message in $CleanupErrors) { Write-Warning $Message }
+    Write-Host ("END UTC: "+[DateTime]::UtcNow.ToString('o'))
+}
+if ($null -ne $Failure) { throw $Failure }
+if ($CleanupErrors.Count -gt 0) { throw 'Cleanup failed; inspect test artifacts before the next logon.' }
+Write-Host 'SCENARIO 13 LOCAL CHECK PASSED: real test SCM service loaded/unloaded unsigned DLL.'
+Write-Host 'Process name: spoolsv.exe LAB SERVICE, not genuine Windows Spooler.'

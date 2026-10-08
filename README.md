@@ -129,14 +129,15 @@ Note: thre alerts will be rised, use any to reveal all conneted events on single
 *** <br />
 Name: 17_autorun_unsigned_servicedll<br />
 Priviliges: local admin <br />
-IoA:
+IoA: change_service_binary_location_in_registry, 
 Preparation: download from: , and put ps1 script and downloaded EDR_Unsigned_Module.dll and spoolsv.exe into same folder
 Execution:<br />
 ```
 & 'C:\<path>\<to>\<containing>\<folder>\EDRSafeUnsignedServiceDllTest.ps1' `
     -SourceDllPath 'C:\<path>\<to>\<containing>\<folder>\EDR_Unsigned_Module.dll' `
     -LoaderExePath 'C:\<path>\<to>\<containing>\<folder>\spoolsv.exe' `
-    -HoldSeconds 60 
+    -HoldSeconds 60 `
+    -KeepArtifacts 
 ```
 Note1: Run this script in test VM with clean snapshot available!
 Note2: Pay attention to paths added as script execution arguments, adjust them accordingly.
