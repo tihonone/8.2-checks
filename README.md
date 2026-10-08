@@ -126,7 +126,7 @@ Privileges: local user <br />
 IoA: windows_command_shell_usage(log entry only),anomaly_in_the_windows_critical_process_tree, suspicious_parent_processes, create_file_named_like_system_tool_in_wrong_place<br />
 Execution: ./16_unexpected_smss.exe_parent.ps1<br />
 Note: thre alerts will be rised, use any to reveal all conneted events on single process tree.<br />
-***
+*** <br />
 Name: 17_autorun_unsigned_servicedll<br />
 Priviliges: local admin <br />
 IoA:
@@ -136,10 +136,12 @@ Execution:<br />
 & 'C:\<path>\<to>\<containing>\<folder>\EDRSafeUnsignedServiceDllTest.ps1' `
     -SourceDllPath 'C:\<path>\<to>\<containing>\<folder>\EDR_Unsigned_Module.dll' `
     -LoaderExePath 'C:\<path>\<to>\<containing>\<folder>\spoolsv.exe' `
-    -HoldSeconds 60 `
-    -KeepArtifacts
+    -HoldSeconds 60 
 ```
-Note: pay attention to paths, adjust them acordingly!!
+Note1: Run this script in test VM with clean snapshot available!
+Note2: Pay attention to paths added as script execution arguments, adjust them accordingly.
+Note3: You may use -KeepArtifacts to keep all changes made by the script for later demonstration.
+Note4: Clean the system, using script named: 17_1_artifacts_cleanup_autorun_unsigned_servicedll, before the next script execution.
 ***
 <br />
 Name: 18_modify_winlogon_registry_settings <br />
