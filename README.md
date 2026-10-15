@@ -119,6 +119,8 @@ LIMIT 250
 ```
 <br />
 custom correlation rule can be used to rise alerts based on such events.
+<br />
+
 ***
 
 Name: 16_unexpected_smss.exe_parent<br />
@@ -126,7 +128,10 @@ Privileges: local user <br />
 IoA: windows_command_shell_usage(log entry only),anomaly_in_the_windows_critical_process_tree, suspicious_parent_processes, create_file_named_like_system_tool_in_wrong_place<br />
 Execution: ./16_unexpected_smss.exe_parent.ps1<br />
 Note: thre alerts will be rised, use any to reveal all conneted events on single process tree.<br />
-*** <br />
+
+***
+
+<br />
 Name: 17_autorun_unsigned_servicedll<br />
 Priviliges: local admin <br />
 IoA: change_service_binary_location_in_registry, 
