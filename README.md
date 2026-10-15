@@ -161,7 +161,8 @@ Name: 18_modify_winlogon_registry_settings <br />
 Privileges: local admin<br />
 IoA: change_winlogon_helper_dll_via_registry, collecting_credentials_from_registry_via_reg, query_registry_for_stored_credentials_via_powershell<br />
 Execution: ./18_modify_winlogon_registry_settings.ps1<br />
-Note: **execute this script only in testing VM with initial state snapshot available!** <br />
+Note: 
+**execute this script only in testing VM with initial state snapshot available!** <br />
 
 ***
 
