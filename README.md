@@ -137,6 +137,7 @@ Priviliges: local admin <br />
 IoA: change_service_binary_location_in_registry, 
 Preparation: download from: , and put ps1 script and downloaded EDR_Unsigned_Module.dll and spoolsv.exe into same folder
 Execution:<br />
+
 ```
 & 'C:\<path>\<to>\<containing>\<folder>\EDRSafeUnsignedServiceDllTest.ps1' `
     -SourceDllPath 'C:\<path>\<to>\<containing>\<folder>\EDR_Unsigned_Module.dll' `
@@ -144,10 +145,12 @@ Execution:<br />
     -HoldSeconds 60 `
     -KeepArtifacts 
 ```
-Note1: Run this script in test VM with clean snapshot available!
-Note2: Pay attention to paths added as script execution arguments, adjust them accordingly.
-Note3: You may use -KeepArtifacts to keep all changes made by the script for later demonstration.
-Note4: Clean the system, using script named: 17_1_artifacts_cleanup_autorun_unsigned_servicedll, before the next script execution.
+
+Note1: Run this script in test VM with clean snapshot available!<br />
+Note2: Pay attention to paths added as script execution arguments, adjust them accordingly.<br />
+Note3: You may use -KeepArtifacts to keep all changes made by the script for later demonstration.<br />
+Note4: Clean the system, using script named: 17_1_artifacts_cleanup_autorun_unsigned_servicedll, before the next script execution.<br />
+
 ***
 <br />
 Name: 18_modify_winlogon_registry_settings <br />
