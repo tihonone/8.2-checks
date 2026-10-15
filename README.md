@@ -1,20 +1,20 @@
 # 8.2-checks
 
-
+<br />
 Name: 01_network_directory_traversal<br />
 Privileges: local admin<br />
 IoA: file_and_directory_discovery_via_powershell_amsi<br />
 Execution:./01_network_directory_traversal.ps1<br />
 Note:<br />
 ***
-
+<br />
 Name: 03_runkey_persistence <br />
 Privileges: local admin<br />
 IoA: explorer_tools_persistence<br />
 Execution:./03_runkey_persistence.ps1 <br />
 Note: before reverting changes go to: Computer -> System drive -> Properties -> Tools -> backup: notepad should be opened<br />
 ***
-
+<br />
 Name:04_SILENT-outbound_from_unsigned_temporary_directory<br />
 Privileges: local user<br />
 IoA: powershell_with_network_activity AND powershell_cmdline_executionpolicy_bypass<br />
@@ -31,14 +31,14 @@ LIMIT 250
 
 __event with "connection" type is actuall network connection, with "process" - script execution__<br />
 ***
-
+<br />
 Name: 05_modify_registry_using_cli_registry_tool <br />
 Privileges: local admin <br />
 IoA: add_netsh_helper_dll <br />
 Execution: ./04_modify_registry_using_cli_registry_tool.ps1 -ConfirmLabVM <br />
 Note: execute script on test VM only, prepare VM snapshot BEFORE script execution, do not execute netsh before cleaning up and removing fake files.  <br />
 ***
-
+<br />
 Name: 06_registing_time_provider_DLL<br />
 Privileges: local admin <br />
 IoA: persistence_via_time_provider_registry_key<br />
@@ -49,14 +49,14 @@ Note:
 - Enabled is always set to 0. Do not change it to 1 for this safe test.
 The test does not change any services, scheduled tasks, svchost.exe processes, network connections, or the system time.
 ***
-
+<br />
 Name: 07_unexpected_services.exe_parent<br />
 Privileges0: local user<br />
 IoA: suspicious_parent_processes, anomaly_in_the_windows_critical_process_tree, create_file_named_like_system_tool_in_wrong_place<br />
 Execution: ./07_unexpected_services.exe_parent.ps1<br />
 Note: three alerts will bi rised<br />
 ***
-
+<br />
 Name: 09_SILENT_PowerShell_command_using_string_manipulation<br />
 Privileges: local user<br />
 IoA: encoded_powershell_code_execution_amsi<br />
@@ -71,7 +71,7 @@ ORDER BY Timestamp DESC
 LIMIT 250  
 ```
 ***
-
+<br />
 Name: 10_unexpected_runtimebroker.exe_parent<br />
 Privileges: local user<br />
 IoA: suspicious_parent_processes<br />
@@ -84,7 +84,7 @@ Launches the copy through cmd.exe without arguments to simulate an unexpected pa
 Does not interact with Windows Runtime, UWP/AppX, services, registry, network, or system processes.
 The copied process may exit quickly and return a non-zero exit code.
 ***
-
+<br />
 Name: 12_registering_boot_execute<br />
 Privileges: local admin<br />
 IoA: bootexecute_registry_keys_set<br />
@@ -93,12 +93,15 @@ Note: each step in script requires explicit confirmation by inreactive input - Y
 
 ***
 
+<br />
 Name: 13_write_executable_to_recycle_bin_directory<br />
 Privileges: local user<br />
 IoA: possible_renamed_interpreter, not_standard_directory_archive(log entry only), archiving_files_in_recycle_via_archive, powershell_cmdline_executionpolicy_bypass(log entry only)<br />
 Execution: ./13_write_executable_to_recycle_bin_directory.ps1<br />
 Note: two alerts will be rised, additionally two log entries with mark up will be generated. If you need to regenerate alerts, reboot target host and execute the script once again.<br />
+
 ***
+<br />
 
 Name: 14_lateral_movement_with_credentials_using_net_utility<br />
 Privileges: local user<br />
@@ -123,6 +126,7 @@ custom correlation rule can be used to rise alerts based on such events.
 
 ***
 
+<br />
 Name: 16_unexpected_smss.exe_parent<br />
 Privileges: local user <br />
 IoA: windows_command_shell_usage(log entry only),anomaly_in_the_windows_critical_process_tree, suspicious_parent_processes, create_file_named_like_system_tool_in_wrong_place<br />
